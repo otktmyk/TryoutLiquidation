@@ -1,7 +1,7 @@
 (function() {
     "use strict";
     kintone.events.on('app.record.index.show', function(event) {
-        if (document.getElementById('output_csv_button') !== null) {
+        if (document.getElementById('download_button') !== null) {
             return;
         }
         if (event.viewName !== '出力用一覧（当月&出力済除外）') {
@@ -9,19 +9,131 @@
         }
 
         var ouputCsvButton = document.createElement('button');
-        ouputCsvButton.id = 'output_csv_button';
+        ouputCsvButton.id = 'download_button';
         ouputCsvButton.innerHTML = 'CSV出力';
 
         // ボタンクリック時の処理
         ouputCsvButton.onclick = function() {
-            window.confirm('CSVを出力します');
+            downloadAndUpdate();
         };
 
         kintone.app.getHeaderMenuSpaceElement().appendChild(ouputCsvButton);
-    });
+        return event;
+
+        // ダウンロードと出力済み更新
+        function downloadAndUpdate() {
+            // CSV作成対象レコードの総件数を取得
+            let param = {
+                app: event.appId,
+                query: 'counsellors_check in ("済") and advance_date = LAST_MONTH() and output_flag not in ("済") limit 1',
+                fields: ['counsellors_check'],
+                totalCount: true,
+                isGuest: false
+            };
+            kintoneUtility.rest.getRecords(param)
+            .then(function(resp) {
+                if(resp.totalCount > 0) {
+                    // 処理対象が１件以上存在する場合は、ファイル出力と出力済みフラグの更新を行う
+                    let param = {
+                        app: event.appId,
+                        query: 'counsellors_check in ("済") and advance_date = LAST_MONTH() and output_flag not in ("済")',
+                        fields: ['$id', 'counsellors_check', 'kind_of_tax', 'output_flag', 'payment_due_date', 'applicant', 'expense', 'advance_date', 'details_to_apply', 'amount_of_money'],
+                        totalCount: false,
+                        isGuest: false
+                    };
+                    kintoneUtility.rest.getAllRecordsByQuery(param)
+                    .then(function(resp){
+                        // 出力処理
+                        let records = resp.records;
+                        let csv = [];
+                        let row = ['税金', '支払い予定日', '氏名', '費目', '日付', '内容', '金額'];
+                        csv.push(row);
+
+                        // エスケープ
+                        let escapeStr = function(value) {
+                            return '"' + (value? value.replace(/"/g, '""'): '') + '"';
+                        };
+
+                        for (let rec of records) {
+                            // 出力内容をレコードから取得
+                            row = [];
+                            row.push(escapeStr(rec['kind_of_tax'].value));
+                            row.push(escapeStr(rec['payment_due_date'].value));
+                            row.push(escapeStr(rec['applicant'].value));
+                            row.push(escapeStr(rec['expense'].value));
+                            row.push(escapeStr(rec['advance_date'].value));
+                            row.push(escapeStr(rec['details_to_apply'].value));
+                            row.push(escapeStr(rec['amount_of_money'].value));
+                            csv.push(row);
+                        }
+                        downloadFile(csv);
+
+                        // 更新データ準備
+                        let newRecords = records.map(function(record) {
+                            let newRec = {
+                                id: record['$id'].value,
+                                record: {}
+                            }
+                            newRec.record['output_flag'] = {value: ['済']}
+                  
+                            return newRec;
+                        });
+
+                        // 更新処理
+                        let param = {
+                            app: event.appId,
+                            records: newRecords,
+                            isGuest: false
+                        };
+                        kintoneUtility.rest.putAllRecords(param);
+                        location.reload();
+                    });
+                }
+                else {
+                    alert('処理対象レコードがありません');
+                }
+            }).catch(function(error) {
+                // エラー時の処理
+                alert('レコード取得エラー:' + error.message);
+            });
+        }
+
+        // ダウンロード処理
+        function  downloadFile(csv) {
+            let fileName = 'paymentList.csv';
+
+            // Blob準備
+            let str2array = function(str) {
+                let array = [], i;
+                for (i=0; i<str.length; i++) array.push(str.charCodeAt(i));
+                return array;
+            };
+            // SJISの配列に変換
+            let csvbuf = csv.map(function(e) {
+                return e.join(',')
+            }).join('\r\n');
+
+            let array = str2array(csvbuf);
+            let sjis_array = Encoding.convert(array, "SJIS", "UNICODE");
+            let uint8_array = new Uint8Array(sjis_array);
+
+            let blob = new Blob([uint8_array], {type: 'text/csv'});
+
+            if(window.navigator.msSaveBlob) {
+                window.navigator.msSaveBlob(blob, fileName);
+            } else {
+                let url = (window.URL || window.webkitURL);
+                let blobUrl = url.createObjectURL(blob);
+                let e = document.createEvent('MouseEvents');
+                e.initMouseEvent('click', true, false, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+                let a = document.createElementNS("http://www.w3.org/1999/xhtml", "a");
+                a.href = blobUrl;
+                a.download = fileName;
+                a.dispatchEvent(e);
+            }
+        }
+    }); 
 })();
-
-
 
 function createUnpayedList(inSheetName) {
   var inSheetName = "経費一覧";
